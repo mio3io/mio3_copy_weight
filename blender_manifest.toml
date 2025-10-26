@@ -1,13 +1,12 @@
 schema_version = "1.0.0"
 id = "mio3_copy_weight"
 name = "Mio3 Copy Weight"
-version = "1.0.0"
+version = "1.1.0"
 tagline = "Copies weights of selected vertices across objects"
 maintainer = "Mio"
 type = "add-on"
 tags = ["Rigging"]
-blender_version_min = "4.2.0"
+blender_version_min = "5.0.0"
 license = ["SPDX:GPL-3.0-or-later"]
 website = "https://github.com/mio3io"
-copyright = ["2024 Mio"]
-
+copyright = ["2025 Mio"]

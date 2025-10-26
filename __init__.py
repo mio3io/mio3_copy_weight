@@ -1,15 +1,6 @@
 import bpy
 from . import op_copy_weight
 
-bl_info = {
-    "name": "Mio3 Copy Weight",
-    "version": (1, 0, 0),
-    "blender": (3, 6, 0),
-    "location": "View 3D > Sidebar > Item Tab > Mio3 Copy Weight",
-    "description": "Copies weights of selected vertices across objects",
-    "category": "Object",
-}
-
 
 class MIO3CW_PT_main(bpy.types.Panel):
     bl_space_type = "VIEW_3D"
@@ -61,6 +52,7 @@ class MIO3CW_Preferences(bpy.types.AddonPreferences):
 translation_dict = {
     "ja_JP": {
         ("*", "The active object has no selected vertices"): "アクティブオブジェクトに選択された頂点がありません",
+        ("Operator", "Copy Weight"): "ウェイトをコピー",
     }
 }  # fmt: skip
 
@@ -84,7 +76,3 @@ def unregister():
     bpy.utils.unregister_class(MIO3CW_PT_main)
     bpy.utils.unregister_class(MIO3CW_Preferences)
     bpy.app.translations.unregister(__name__)
-
-
-if __name__ == "__main__":
-    register()

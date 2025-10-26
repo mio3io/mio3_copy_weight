@@ -1,13 +1,23 @@
 import bpy
 import bmesh
 from bpy.types import Operator
+from bpy.props import EnumProperty
 
 
 class MIO3_OT_copy_weight(Operator):
     bl_idname = "object.mio3_vertex_weight_copy"
-    bl_label = "Copy weights"
+    bl_label = "Copy Weights"
     bl_description = "Copy weights"
     bl_options = {"REGISTER", "UNDO"}
+
+    subset: EnumProperty(
+        name="Subset",
+        items=[
+            ("ALL", "All", "Copy every vertex group"),
+            ("DEFORM", "Deform Pose Bones", "Copy only deforming bone groups"),
+            ("ACTIVE", "Active Only", "Copy the currently active vertex group"),
+        ],
+    )
 
     @classmethod
     def poll(cls, context):
@@ -16,68 +26,125 @@ class MIO3_OT_copy_weight(Operator):
 
     def execute(self, context):
         active_obj = context.active_object
-        target_obj = next((obj for obj in context.selected_objects if obj != active_obj), None)
-        active_mesh = active_obj.data
+        active_obj.update_from_editmode()
 
-        active_bm = bmesh.from_edit_mesh(active_mesh)
+        active_bm = bmesh.from_edit_mesh(active_obj.data)
         active_bm.verts.ensure_lookup_table()
         active_vert = active_bm.select_history.active
         if not active_vert:
-            bmesh.update_edit_mesh(active_mesh)
-            self.report({"ERROR"}, "The active object has no selected vertices")
             return {"CANCELLED"}
 
-        active_index = active_vert.index
+        vertex_groups = self.get_vgroups(active_obj, active_bm, active_vert)
 
-        if active_mesh.total_vert_sel > 1:
-            bpy.ops.object.vertex_weight_copy()
+        if active_obj.data.total_vert_sel > 1:
+            selected_verts = [v for v in active_bm.verts if v.select and v != active_vert]
+            self.copy_weight(active_obj, active_bm, vertex_groups, selected_verts)
 
-        if target_obj:
-            bpy.ops.object.mode_set(mode="OBJECT")
-            selected_verts = [v for v in target_obj.data.vertices if v.select]
-            vertex_groups = self.get_vgroups(active_obj, active_mesh.vertices[active_index])
-            self.copy_weight(vertex_groups, selected_verts, target_obj)
-            target_obj.data.update()
-            bpy.ops.object.mode_set(mode="EDIT")
+            if active_obj.use_mesh_mirror_x:
+                mirror_source = active_obj.data.vertices[selected_verts[0].index]
+                self.apply_paste_from_mirror(active_obj, mirror_source)
 
-            if target_obj.use_mesh_mirror_x:
-                if selected_verts:
-                    bpy.context.view_layer.objects.active = target_obj
-                    for g in selected_verts[0].groups:
-                        vg = target_obj.vertex_groups[g.group]
-                        if not vg.lock_weight:
-                            bpy.ops.object.vertex_weight_paste(weight_group=g.group)
-                    bpy.context.view_layer.objects.active = active_obj
+            bmesh.update_edit_mesh(active_obj.data)
 
-            if active_obj.vertex_groups.active:
-                target_group_name = active_obj.vertex_groups.active.name
-                if target_group_name in target_obj.vertex_groups:
-                    vg_index = target_obj.vertex_groups[target_group_name].index
-                    target_obj.vertex_groups.active_index = vg_index
+        target_obj = self.get_sub_object(context, active_obj)
+        if target_obj and vertex_groups:
+            target_obj.update_from_editmode()
+
+            target_bm = bmesh.from_edit_mesh(target_obj.data)
+            target_bm.verts.ensure_lookup_table()
+            selected_verts = [v for v in target_bm.verts if v.select]
+
+            if selected_verts:
+                self.copy_weight(target_obj, target_bm, vertex_groups, selected_verts)
+
+                if target_obj.use_mesh_mirror_x:
+                    context.view_layer.objects.active = target_obj
+                    mirror_source = target_obj.data.vertices[selected_verts[0].index]
+                    self.apply_paste_from_mirror(target_obj, mirror_source)
+                    context.view_layer.objects.active = active_obj
+
+                if active_obj.vertex_groups.active:
+                    target_group_name = active_obj.vertex_groups.active.name
+                    if target_group_name in target_obj.vertex_groups:
+                        target_obj.vertex_groups.active_index = target_obj.vertex_groups[
+                            target_group_name
+                        ].index
+
+                bmesh.update_edit_mesh(target_obj.data)
 
         return {"FINISHED"}
 
-    def get_vgroups(self, obj, vert):
+    def get_vgroups(self, obj, bm, active_vert):
+        deform_layer = bm.verts.layers.deform.verify()
+
+        deform_groups = self.get_deform_vertex_groups(obj)
+        deform_indices = {vg.index for vg in deform_groups}
+
         vertex_groups = []
-        for g in vert.groups:
-            vertex_groups.append((obj.vertex_groups[g.group], g.weight))
+        for group_index, weight in active_vert[deform_layer].items():
+            if self.subset == "DEFORM" and group_index not in deform_indices:
+                continue
+            if self.subset == "ACTIVE" and group_index != obj.vertex_groups.active_index:
+                continue
+            vertex_groups.append((obj.vertex_groups[group_index], weight))
         return vertex_groups
 
-    def copy_weight(self, vertex_groups, verts, obj):
-        indexes = [v.index for v in verts]
-        for vg in obj.vertex_groups:
-            if not vg.lock_weight:
-                vg.remove(indexes)
+    def copy_weight(self, obj, bm, vertex_groups, selected_verts):
+        deform_layer = bm.verts.layers.deform.verify()
 
-        for group, weight in vertex_groups:
+        source_group_indices = set()
+        for group, _ in vertex_groups:
             if group.name not in obj.vertex_groups:
-                new_group = obj.vertex_groups.new(name=group.name)
+                vgroup = obj.vertex_groups.new(name=group.name)
             else:
-                new_group = obj.vertex_groups[group.name]
+                vgroup = obj.vertex_groups[group.name]
+            if not vgroup.lock_weight:
+                source_group_indices.add(vgroup.index)
 
-            if not new_group.lock_weight:
-                for v in verts:
-                    new_group.add([v.index], weight, "REPLACE")
+        if not source_group_indices:
+            return
+
+        for vert in selected_verts:
+            deform = vert[deform_layer]
+            current_weights = dict(deform)
+
+            for index in list(current_weights):
+                if index not in source_group_indices and index in deform:
+                    deform[index] = 0.0
+
+            for group, weight in vertex_groups:
+                vgroup = obj.vertex_groups[group.name]
+                if not vgroup.lock_weight:
+                    deform[vgroup.index] = weight
+
+    @staticmethod
+    def get_deform_vertex_groups(obj):
+        deform_groups = []
+        armature = obj.find_armature()
+        if not armature or not hasattr(armature, "pose"):
+            return deform_groups
+
+        for vg in obj.vertex_groups:
+            if any(b for b in armature.pose.bones if b.bone.use_deform and b.name == vg.name):
+                deform_groups.append(vg)
+        return deform_groups
+
+    @staticmethod
+    def get_sub_object(context, active_obj):
+        for obj in context.selected_objects:
+            if obj.type in {"MESH"} and obj != active_obj:
+                return obj
+        return None
+
+    @staticmethod
+    def apply_paste_from_mirror(obj, vert):
+        if not vert.groups:
+            return
+        for g in vert.groups:
+            vg = obj.vertex_groups[g.group]
+            if vg.lock_weight:
+                continue
+            bpy.ops.object.vertex_weight_paste(weight_group=g.group)
 
 
 classes = [
